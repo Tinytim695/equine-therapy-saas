@@ -41,6 +41,8 @@ export interface SessionNote {
   plan_next: string | null;
   notes: string | null;
   is_private: boolean;
+  muscle_map?: unknown;
+  rehab_plan?: unknown;
   created_at: string;
   updated_at: string;
 }
