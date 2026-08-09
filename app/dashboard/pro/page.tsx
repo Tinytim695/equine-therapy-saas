@@ -6,10 +6,15 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import MuscleMap from "@/components/MuscleMap";
 import RehabBuilder from "@/components/RehabBuilder";
+import DownloadSessionPdf from "@/components/DownloadSessionPdf";
+import Spinner from "@/components/ui/Spinner";
+import Toast, { type ToastState } from "@/components/ui/Toast";
 import { fetchTherapistHorses, createHorse } from "@/lib/data/horses";
 import {
   saveSessionNote,
   fetchClientsForTherapist,
+  fetchTherapistSessions,
+  type SessionRecord,
 } from "@/lib/data/sessions";
 import type { ZoneState } from "@/types/muscle";
 import type { RehabExercise } from "@/types/rehab";
@@ -22,57 +27,44 @@ export default function TherapistDashboard() {
   const [clients, setClients] = useState<
     { id: string; full_name: string | null; email: string | null }[]
   >([]);
-  const [selectedHorseId, setSelectedHorseId] = useState<string>("");
-  const [selectedClientId, setSelectedClientId] = useState<string>("");
+  const [recentSessions, setRecentSessions] = useState<SessionRecord[]>([]);
+  const [selectedHorseId, setSelectedHorseId] = useState("");
+  const [selectedClientId, setSelectedClientId] = useState("");
   const [muscleZones, setMuscleZones] = useState<ZoneState[]>([]);
   const [exercises, setExercises] = useState<RehabExercise[]>([]);
   const [sessionNote, setSessionNote] = useState("");
   const [saving, setSaving] = useState(false);
-  const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [newHorseName, setNewHorseName] = useState("");
   const [addingHorse, setAddingHorse] = useState(false);
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [lastSaved, setLastSaved] = useState<SessionRecord | null>(null);
 
   const router = useRouter();
   const supabase = createClient();
 
   const loadRoster = useCallback(async (therapistId: string) => {
-    const [horseList, clientList] = await Promise.all([
+    const [horseList, clientList, sessions] = await Promise.all([
       fetchTherapistHorses(therapistId),
       fetchClientsForTherapist(therapistId),
+      fetchTherapistSessions(therapistId),
     ]);
     setHorses(horseList);
     setClients(clientList);
-    if (horseList.length) setSelectedHorseId((prev) => prev || horseList[0].id);
-    if (clientList.length) setSelectedClientId((prev) => prev || clientList[0].id);
+    setRecentSessions(sessions.slice(0, 5));
+    if (horseList.length) setSelectedHorseId((p) => p || horseList[0].id);
+    if (clientList.length) setSelectedClientId((p) => p || clientList[0].id);
   }, []);
 
   useEffect(() => {
     async function load() {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-
-      const { data } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", user.id)
-        .single();
-
-      if (!data || data.role !== "therapist") {
-        router.push("/dashboard/client");
-        return;
-      }
-
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { router.push("/login"); return; }
+      const { data } = await supabase.from("profiles").select("*").eq("id", user.id).single();
+      if (!data || data.role !== "therapist") { router.push("/dashboard/client"); return; }
       setProfile(data as Profile);
       await loadRoster(user.id);
       setLoading(false);
     }
-
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
@@ -92,6 +84,9 @@ export default function TherapistDashboard() {
       setHorses((prev) => [...prev, horse].sort((a, b) => a.name.localeCompare(b.name)));
       setSelectedHorseId(horse.id);
       setNewHorseName("");
+      setToast({ message: `Horse "${horse.name}" added.`, tone: "success" });
+    } else {
+      setToast({ message: "Could not add horse. Check Supabase RLS and schema.", tone: "error" });
     }
     setAddingHorse(false);
   }
@@ -99,13 +94,10 @@ export default function TherapistDashboard() {
   async function handleSaveSession() {
     if (!profile) return;
     if (!selectedClientId) {
-      setSaveMessage("Select a client before saving.");
+      setToast({ message: "Select a client before saving.", tone: "error" });
       return;
     }
-
     setSaving(true);
-    setSaveMessage(null);
-
     const { data, error } = await saveSessionNote({
       therapistId: profile.id,
       clientId: selectedClientId,
@@ -115,27 +107,30 @@ export default function TherapistDashboard() {
       rehabPlan: exercises,
       title: `Session ${new Date().toLocaleDateString()}`,
     });
-
     if (error) {
-      setSaveMessage(`Save failed: ${error}`);
+      setToast({ message: `Save failed: ${error}`, tone: "error" });
     } else {
-      setSaveMessage(
-        `Session saved${data?.id ? ` (${data.id.slice(0, 8)}…)` : ""}. Client can now see it.`
-      );
+      setLastSaved(data);
+      if (data) setRecentSessions((prev) => [data, ...prev].slice(0, 5));
+      setToast({ message: "Session saved to Supabase. Client can view it now.", tone: "success" });
     }
     setSaving(false);
   }
 
+  const selectedHorse = horses.find((h) => h.id === selectedHorseId);
+  const selectedClient = clients.find((c) => c.id === selectedClientId);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <p className="text-sm text-slate-500">Loading dashboard…</p>
+        <Spinner label="Loading therapist workspace\u2026" />
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-slate-50">
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
       <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 backdrop-blur">
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-3.5 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -153,46 +148,61 @@ export default function TherapistDashboard() {
         <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Session Workspace</h1>
-            <p className="mt-1 text-sm text-slate-600">Live roster from Supabase · map tension · prescribe rehab · save to DB</p>
+            <p className="mt-1 text-sm text-slate-600">Live Supabase data \u00b7 export professional PDF summaries</p>
           </div>
-          <button type="button" onClick={handleSaveSession} disabled={saving} className="shrink-0 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-sm font-medium px-4 py-2.5 transition shadow-sm">
-            {saving ? "Saving…" : "Save session to Supabase"}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {(lastSaved || muscleZones.length > 0 || exercises.length > 0) && (
+              <DownloadSessionPdf
+                session={{
+                  horseName: selectedHorse?.name,
+                  clientName: selectedClient?.full_name || selectedClient?.email || undefined,
+                  therapistName: profile?.full_name || profile?.email || undefined,
+                  sessionDate: lastSaved?.session_date || new Date().toISOString().slice(0, 10),
+                  notes: sessionNote || lastSaved?.notes,
+                  muscleMap: lastSaved?.muscle_map?.length ? lastSaved.muscle_map : muscleZones,
+                  rehabPlan: lastSaved?.rehab_plan?.length ? lastSaved.rehab_plan : exercises,
+                  title: lastSaved?.title || "Current session draft",
+                }}
+              />
+            )}
+            <button type="button" onClick={handleSaveSession} disabled={saving} className="rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-sm font-medium px-4 py-2.5 transition shadow-sm">
+              {saving ? "Saving\u2026" : "Save session to Supabase"}
+            </button>
+          </div>
         </div>
-
-        {saveMessage && (
-          <div className={`mb-4 rounded-lg px-4 py-3 text-sm ${
-            saveMessage.startsWith("Save failed")
-              ? "bg-red-50 text-red-700 border border-red-100"
-              : "bg-emerald-50 text-emerald-800 border border-emerald-100"
-          }`}>{saveMessage}</div>
-        )}
 
         <div className="mb-6 grid gap-4 sm:grid-cols-2">
           <div className="rounded-xl border border-slate-200 bg-white p-4">
             <label className="block text-xs font-medium text-slate-600 mb-1.5">Horse</label>
-            <select value={selectedHorseId} onChange={(e) => setSelectedHorseId(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30">
-              <option value="">— Select horse —</option>
-              {horses.map((h) => (
-                <option key={h.id} value={h.id}>{h.name}{h.breed ? ` (${h.breed})` : ""}</option>
-              ))}
-            </select>
+            {horses.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center">
+                <p className="text-sm text-slate-500">No horses assigned yet</p>
+                <p className="text-xs text-slate-400 mt-1">Add your first horse below</p>
+              </div>
+            ) : (
+              <select value={selectedHorseId} onChange={(e) => setSelectedHorseId(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30">
+                <option value="">\u2014 Select horse \u2014</option>
+                {horses.map((h) => (<option key={h.id} value={h.id}>{h.name}{h.breed ? ` (${h.breed})` : ""}</option>))}
+              </select>
+            )}
             <form onSubmit={handleAddHorse} className="mt-3 flex gap-2">
               <input type="text" value={newHorseName} onChange={(e) => setNewHorseName(e.target.value)} placeholder="Add horse name" className="flex-1 rounded-lg border border-slate-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30" />
-              <button type="submit" disabled={addingHorse || !newHorseName.trim()} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50">{addingHorse ? "…" : "Add"}</button>
+              <button type="submit" disabled={addingHorse || !newHorseName.trim()} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50">{addingHorse ? "\u2026" : "Add"}</button>
             </form>
-            {horses.length === 0 && (<p className="mt-2 text-xs text-amber-700">No horses yet. Add one above (requires Supabase horses table + RLS).</p>)}
           </div>
-
           <div className="rounded-xl border border-slate-200 bg-white p-4">
             <label className="block text-xs font-medium text-slate-600 mb-1.5">Client</label>
-            <select value={selectedClientId} onChange={(e) => setSelectedClientId(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30">
-              <option value="">— Select client —</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>{c.full_name || c.email || c.id.slice(0, 8)}</option>
-              ))}
-            </select>
-            {clients.length === 0 && (<p className="mt-2 text-xs text-amber-700">No client profiles found. Have a user sign up with role &quot;Client&quot;, then refresh.</p>)}
+            {clients.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-6 text-center">
+                <p className="text-sm text-slate-500">No clients found yet</p>
+                <p className="text-xs text-slate-400 mt-1">Have a user sign up as Client, then refresh</p>
+              </div>
+            ) : (
+              <select value={selectedClientId} onChange={(e) => setSelectedClientId(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30">
+                <option value="">\u2014 Select client \u2014</option>
+                {clients.map((c) => (<option key={c.id} value={c.id}>{c.full_name || c.email || c.id.slice(0, 8)}</option>))}
+              </select>
+            )}
           </div>
         </div>
 
@@ -200,7 +210,7 @@ export default function TherapistDashboard() {
           <div className="rounded-xl border border-slate-200 bg-white px-4 py-3"><p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Horses</p><p className="mt-1 text-xl font-semibold text-slate-900">{horses.length}</p></div>
           <div className="rounded-xl border border-slate-200 bg-white px-4 py-3"><p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Zones flagged</p><p className="mt-1 text-xl font-semibold text-slate-900">{muscleZones.filter((z) => z.severity !== "normal").length}</p></div>
           <div className="rounded-xl border border-slate-200 bg-white px-4 py-3"><p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Exercises</p><p className="mt-1 text-xl font-semibold text-slate-900">{exercises.length}</p></div>
-          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3"><p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Phase</p><p className="mt-1 text-xl font-semibold text-emerald-700">4</p></div>
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3"><p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Phase</p><p className="mt-1 text-xl font-semibold text-emerald-700">5</p></div>
         </div>
 
         <div className="grid gap-6 lg:grid-cols-5">
@@ -210,18 +220,37 @@ export default function TherapistDashboard() {
             <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
               <div className="border-b border-slate-100 px-5 py-4">
                 <h2 className="text-base font-semibold text-slate-900">Session notes</h2>
-                <p className="text-xs text-slate-500 mt-0.5">Saved to Supabase with muscle map + rehab plan</p>
+                <p className="text-xs text-slate-500 mt-0.5">Included in PDF export</p>
               </div>
               <div className="p-4">
-                <textarea rows={5} value={sessionNote} onChange={(e) => setSessionNote(e.target.value)} placeholder="Horse presentation, compensatory patterns, owner concerns…" className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 resize-none" />
+                <textarea rows={5} value={sessionNote} onChange={(e) => setSessionNote(e.target.value)} placeholder="Horse presentation, compensatory patterns\u2026" className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 resize-none" />
               </div>
             </div>
+            {recentSessions.length > 0 && (
+              <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                <div className="border-b border-slate-100 px-5 py-4">
+                  <h2 className="text-base font-semibold text-slate-900">Recent sessions</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">Export any saved session as PDF</p>
+                </div>
+                <ul className="divide-y divide-slate-100">
+                  {recentSessions.map((s) => (
+                    <li key={s.id} className="px-4 py-3 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-slate-900 truncate">{s.session_date}{s.horses?.name ? ` \u00b7 ${s.horses.name}` : ""}</p>
+                        <p className="text-xs text-slate-500 truncate">{s.notes || s.title || "Session"}</p>
+                      </div>
+                      <DownloadSessionPdf session={{ horseName: s.horses?.name, therapistName: profile?.full_name || profile?.email || undefined, sessionDate: s.session_date, notes: s.notes, muscleMap: s.muscle_map || [], rehabPlan: s.rehab_plan || [], title: s.title }} label="PDF" />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         </div>
 
         <div className="mt-10 rounded-xl border border-dashed border-slate-300 bg-white/50 p-6 text-center">
-          <p className="text-sm text-slate-500">Phase 4 — Live Supabase wire-up. Run <code className="text-xs bg-slate-100 px-1 rounded">supabase/phase4_migration.sql</code> if you have not already.</p>
-          <Link href="/" className="mt-3 inline-block text-sm font-medium text-emerald-700 hover:text-emerald-800">← Back to home</Link>
+          <p className="text-sm text-slate-500">Phase 5 complete \u2014 PDF export, toasts, spinners, and empty states are live.</p>
+          <Link href="/" className="mt-3 inline-block text-sm font-medium text-emerald-700 hover:text-emerald-800">\u2190 Back to home</Link>
         </div>
       </main>
     </div>
