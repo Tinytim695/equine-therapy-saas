@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import ClientMuscleView from "@/components/ClientMuscleView";
 import ClientRehabChecklist from "@/components/ClientRehabChecklist";
+import DownloadSessionPdf from "@/components/DownloadSessionPdf";
+import Spinner from "@/components/ui/Spinner";
 import { fetchClientSessions, type SessionRecord } from "@/lib/data/sessions";
 import type { Profile } from "@/types";
 import type { ZoneState } from "@/types/muscle";
@@ -13,10 +15,11 @@ import type { RehabExercise } from "@/types/rehab";
 
 function formatDate(iso: string) {
   try {
-    return new Date(iso + (iso.length === 10 ? "T12:00:00" : "")).toLocaleDateString(
-      undefined,
-      { year: "numeric", month: "short", day: "numeric" }
-    );
+    return new Date(iso + (iso.length === 10 ? "T12:00:00" : "")).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
   } catch {
     return iso;
   }
@@ -28,43 +31,21 @@ export default function ClientDashboard() {
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [checklistProgress, setChecklistProgress] = useState({ done: 0, total: 0 });
-  const [fetchError, setFetchError] = useState<string | null>(null);
   const router = useRouter();
   const supabase = createClient();
 
   useEffect(() => {
     async function load() {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-
-      const { data } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", user.id)
-        .single();
-
-      if (!data || data.role !== "client") {
-        router.push("/dashboard/pro");
-        return;
-      }
-
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { router.push("/login"); return; }
+      const { data } = await supabase.from("profiles").select("*").eq("id", user.id).single();
+      if (!data || data.role !== "client") { router.push("/dashboard/pro"); return; }
       setProfile(data as Profile);
-
       const liveSessions = await fetchClientSessions(user.id);
       setSessions(liveSessions);
-      if (liveSessions.length > 0) {
-        setSelectedSessionId(liveSessions[0].id);
-      }
-      setFetchError(null);
+      if (liveSessions.length > 0) setSelectedSessionId(liveSessions[0].id);
       setLoading(false);
     }
-
     load();
   }, [router, supabase]);
 
@@ -87,7 +68,7 @@ export default function ClientDashboard() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-amber-50/40">
-        <p className="text-sm text-slate-500">Loading your portal…</p>
+        <Spinner label="Loading your portal\u2026" />
       </div>
     );
   }
@@ -108,20 +89,33 @@ export default function ClientDashboard() {
       </header>
 
       <main className="mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-            Welcome{profile?.full_name ? `, ${profile.full_name.split(" ")[0]}` : ""}
-          </h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Live data from your therapist&apos;s sessions · complete today&apos;s exercises
-          </p>
+        <div className="mb-8 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
+              Welcome{profile?.full_name ? `, ${profile.full_name.split(" ")[0]}` : ""}
+            </h1>
+            <p className="mt-1 text-sm text-slate-600">Live session data \u00b7 daily checklist \u00b7 PDF export</p>
+          </div>
+          {selectedSession && (
+            <DownloadSessionPdf
+              session={{
+                horseName: selectedSession.horses?.name,
+                clientName: profile?.full_name || profile?.email || undefined,
+                sessionDate: selectedSession.session_date,
+                notes: selectedSession.notes,
+                muscleMap: selectedSession.muscle_map || [],
+                rehabPlan: selectedSession.rehab_plan || [],
+                title: selectedSession.title,
+              }}
+            />
+          )}
         </div>
 
         <div className="mb-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="rounded-xl border border-amber-100 bg-white px-4 py-3">
             <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Today&apos;s progress</p>
             <p className="mt-1 text-xl font-semibold text-emerald-700">
-              {checklistProgress.total > 0 ? `${checklistProgress.done}/${checklistProgress.total}` : "—"}
+              {checklistProgress.total > 0 ? `${checklistProgress.done}/${checklistProgress.total}` : "\u2014"}
             </p>
           </div>
           <div className="rounded-xl border border-amber-100 bg-white px-4 py-3">
@@ -130,23 +124,21 @@ export default function ClientDashboard() {
           </div>
           <div className="rounded-xl border border-amber-100 bg-white px-4 py-3">
             <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Areas flagged</p>
-            <p className="mt-1 text-xl font-semibold text-amber-700">
-              {muscleZones.filter((z) => z.severity !== "normal").length}
-            </p>
+            <p className="mt-1 text-xl font-semibold text-amber-700">{muscleZones.filter((z) => z.severity !== "normal").length}</p>
           </div>
           <div className="rounded-xl border border-amber-100 bg-white px-4 py-3">
             <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Phase</p>
-            <p className="mt-1 text-xl font-semibold text-emerald-700">4</p>
+            <p className="mt-1 text-xl font-semibold text-emerald-700">5</p>
           </div>
         </div>
 
         {sessions.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-amber-200 bg-white p-10 text-center">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-amber-50 text-amber-700 text-lg">\u25cc</div>
             <h2 className="text-base font-semibold text-slate-900">No sessions yet</h2>
             <p className="mt-2 text-sm text-slate-500 max-w-md mx-auto">
-              When your therapist saves a session with your account selected, the muscle map and rehab exercises will appear here automatically.
+              When your therapist saves a session with your account selected, the muscle map, rehab checklist, and PDF export will appear here.
             </p>
-            {fetchError && <p className="mt-3 text-xs text-red-600">{fetchError}</p>}
           </div>
         ) : (
           <div className="grid gap-6 lg:grid-cols-5">
@@ -161,49 +153,49 @@ export default function ClientDashboard() {
                 lastUpdated={selectedSession ? formatDate(selectedSession.session_date) : undefined}
               />
             </div>
-
             <div className="lg:col-span-2 space-y-6">
               <div className="rounded-2xl border border-amber-100 bg-white shadow-sm overflow-hidden">
                 <div className="border-b border-amber-50 px-5 py-4">
                   <h2 className="text-base font-semibold text-slate-900">Session history</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">Loaded from Supabase</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Tap a visit \u00b7 download PDF</p>
                 </div>
-                <div className="p-3 space-y-1 max-h-72 overflow-y-auto">
+                <div className="p-3 space-y-1 max-h-80 overflow-y-auto">
                   {sessions.map((session) => (
-                    <button
-                      key={session.id}
-                      type="button"
-                      onClick={() => setSelectedSessionId(session.id)}
-                      className={`w-full text-left rounded-xl px-3.5 py-3 transition ${
-                        selectedSessionId === session.id
-                          ? "bg-amber-50 border border-amber-200"
-                          : "hover:bg-slate-50 border border-transparent"
-                      }`}
-                    >
-                      <p className="text-sm font-medium text-slate-900">
-                        {formatDate(session.session_date)}
-                        {session.horses?.name ? ` · ${session.horses.name}` : ""}
-                      </p>
-                      <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">
-                        {session.notes || session.title || "Session notes"}
-                      </p>
-                    </button>
+                    <div key={session.id} className={`rounded-xl px-3.5 py-3 transition border ${
+                      selectedSessionId === session.id ? "bg-amber-50 border-amber-200" : "hover:bg-slate-50 border-transparent"
+                    }`}>
+                      <button type="button" onClick={() => setSelectedSessionId(session.id)} className="w-full text-left">
+                        <p className="text-sm font-medium text-slate-900">
+                          {formatDate(session.session_date)}{session.horses?.name ? ` \u00b7 ${session.horses.name}` : ""}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">{session.notes || session.title || "Session notes"}</p>
+                      </button>
+                      <div className="mt-2">
+                        <DownloadSessionPdf
+                          session={{
+                            horseName: session.horses?.name,
+                            clientName: profile?.full_name || profile?.email || undefined,
+                            sessionDate: session.session_date,
+                            notes: session.notes,
+                            muscleMap: session.muscle_map || [],
+                            rehabPlan: session.rehab_plan || [],
+                            title: session.title,
+                          }}
+                          label="Download PDF"
+                        />
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>
-
               <div className="rounded-2xl border border-amber-100 bg-white shadow-sm overflow-hidden">
                 <div className="border-b border-amber-50 px-5 py-4">
                   <h2 className="text-base font-semibold text-slate-900">Therapist notes</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    {selectedSession ? formatDate(selectedSession.session_date) : "—"}
-                  </p>
+                  <p className="text-xs text-slate-500 mt-0.5">{selectedSession ? formatDate(selectedSession.session_date) : "\u2014"}</p>
                 </div>
                 <div className="p-5">
                   <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
-                    {selectedSession?.notes ||
-                      selectedSession?.observations ||
-                      "No written notes for this session."}
+                    {selectedSession?.notes || selectedSession?.observations || "No written notes for this session."}
                   </p>
                 </div>
               </div>
@@ -212,12 +204,8 @@ export default function ClientDashboard() {
         )}
 
         <div className="mt-10 rounded-xl border border-dashed border-amber-200 bg-white/50 p-6 text-center">
-          <p className="text-sm text-slate-500">
-            Phase 4 complete — Client dashboard reads live{" "}
-            <code className="text-xs bg-slate-100 px-1 rounded">session_notes</code>{" "}
-            (muscle_map + rehab_plan) from Supabase.
-          </p>
-          <Link href="/" className="mt-3 inline-block text-sm font-medium text-emerald-700 hover:text-emerald-800">← Back to home</Link>
+          <p className="text-sm text-slate-500">Phase 5 complete \u2014 full dual-sided Equine Therapy SaaS is ready.</p>
+          <Link href="/" className="mt-3 inline-block text-sm font-medium text-emerald-700 hover:text-emerald-800">\u2190 Back to home</Link>
         </div>
       </main>
     </div>
